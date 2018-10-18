@@ -68,8 +68,9 @@ def test_operation_path(op, path, token):
     # Setup a SciToken Enforcer
     if token['iss'] not in g_authorized_issuers:
         return (False, "Issuer not in configuration")
-    issuer = token['iss']
-    base_path = g_authorized_issuers[issuer]['base_path']
+    issuer_url = token['iss']
+    issuer = g_authorized_issuers[issuer_url]
+    base_path = issuer['base_path']
     
     # The path above should consist of"
     # $base_path + / + $auth_path + / + $request_path = path
@@ -78,21 +79,26 @@ def test_operation_path(op, path, token):
         return (False, "The requested path does not start with the base path")
     
     # Now remove the base path so we just get the auth_path + request_path
-    auth_requested = path.replace(base_path, "", 1)
-    print auth_requested
-    
+    filepath_on_disk = path.replace(base_path, "", 1)
+
+    if issuer['use_impersonation']:
+        if impersonation_check(token, filepath_on_disk):
+            return (True, "")
+        # Note: Fall through to next authorizer
+
     enforcer = scitokens.scitokens.Enforcer(token['iss'], audience=g_global_audience)
     try:
-        if enforcer.test(token, op, auth_requested):
+        if enforcer.test(token, op, filepath_on_disk):
             return (True, "")
         else:
             return (False, "Path not allowed")
     except scitokens.scitokens.EnforcementError as e:
         print e
         return (False, str(e))
-        
-    return (True, "")
-    
+
+    # Fallthrough - We should never be here
+    return (False, "[ERROR] We should not be here.")
+
 
 # From xrootd-scitokens, we want the same configuration
 def config(fname):
@@ -115,10 +121,13 @@ def config(fname):
             print "Ignoring section %s as it has no `base_path` option set." % section
             continue
         issuer = cp.get(section, 'issuer')
+        use_impersonation = cp.getboolean(section, 'impersonation', fallback=False)
+
         base_path = cp.get(section, 'base_path')
         base_path = scitokens.urltools.normalize_path(base_path)
         issuer_info = g_authorized_issuers.setdefault(issuer, {})
         issuer_info['base_path'] = base_path
+        issuer_info['use_impersonation']  = use_impersonation
         if 'map_subject' in cp.options(section):
             issuer_info['map_subject'] = cp.getboolean(section, 'map_subject')
         print "Configured token access for %s (issuer %s): %s" % (section, issuer, str(issuer_info))
@@ -134,6 +143,10 @@ def config(fname):
             g_global_audience = re.split("\s*,\s*", g_global_audience)
     
 
+def impersonation_test(token, op, filepath_on_disk):
+    test_option = "-w" if op == "write" else "-r"
+    return_code = subprocess.call(["sudo", "-u", token["sub"], "test", test_option, filepath_on_disk])
+    return return_code == 0
 
 
 def main():
